@@ -1,6 +1,6 @@
 # TinyTiny
 
-A super small coding harness made for [Ornith 1.5 9b ](), so it can run on our beloved toasters, and any potato computer.
+A super small coding harness made for [Ornith 1.5 9b ](https://ornith.ai/ornith_1_5.html), so it can run on our beloved toasters, and any potato computer.
 
 This is the bare minimum harness we can build. 
 

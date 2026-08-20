@@ -53,10 +53,19 @@ test(
       await server.start(180_000);
       console.log(`[integration] server ready at ${server.baseUrl}`);
 
-      // Turn 1: ask for a tool call.
-      store.addUser("Use the read tool on this file and call it now: " + tmp);
+      // Turn 1: ask for a tool call. Steering rides on the user instruction
+      // (system prompt is contract-only by design).
+      store.addUser(
+        "You must call the read tool on this exact path and call it now — do not answer in plain text: " + tmp,
+      );
       const turn1 = buildRequest(store, DEFAULT_SESSION_CONFIG.systemPrompt);
       const r1 = await chat(server.baseUrl, { messages: turn1, tools: [READ_TOOL] });
+      assert.ok(
+        r1.toolCalls.length === 1,
+        `expected one tool call, got ${r1.toolCalls.length}; ` +
+          `content=${JSON.stringify(r1.content)} ` +
+          `reasoning=${JSON.stringify(r1.reasoning.slice(-300))}`,
+      );
       assert.ok(r1.toolCalls.length === 1, `expected one tool call, got ${r1.toolCalls.length}`);
       const call = r1.toolCalls[0]!;
       assert.equal(call.function.name, "read");
@@ -78,7 +87,12 @@ test(
       const cached = r2.usage?.prompt_tokens_details?.cached_tokens ?? 0;
       console.log(`[integration] turn 2: prompt_tokens=${r2.usage?.prompt_tokens} cached=${cached} answer=${JSON.stringify(r2.content)}`);
       assert.ok(cached > 0, `expected cached_tokens > 0 on extension, got ${cached}`);
-      assert.equal(r2.content?.trim(), "15", "model must answer the sum of 1..5");
+      assert.equal(
+        r2.content?.trim(),
+        "15",
+        `model must answer the sum of 1..5; got ${JSON.stringify(r2.content)} ` +
+          `reasoning=${JSON.stringify(r2.reasoning.slice(-200))}`,
+      );
     } finally {
       await server.stop();
       fs.rmSync(tmp, { force: true });
