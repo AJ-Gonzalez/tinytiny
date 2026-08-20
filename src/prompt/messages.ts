@@ -134,4 +134,31 @@ export class MessageStore {
   ingestCompletion(completion: CompletionMessage): void {
     this.addAssistant(completion.content, completion.tool_calls);
   }
+
+  /**
+   * Tier-B eviction (DESIGN): collapse history to the stable prefix (the
+   * task brief), an eviction marker, and the last tool exchange (the
+   * assistant tool_call PLUS its result — a `tool` message is invalid
+   * without its preceding assistant tool_call). Drops everything between.
+   * This is the documented, deliberate, rare exception to append-only; a
+   * full cold reprocess follows.
+   */
+  evictTierB(taskBrief: string, marker: string, lastTool: { call: AssistantMessage; result: ToolMessage } | null): void {
+    const kept: ChatMessage[] = [{ role: "user", content: taskBrief }];
+    if (marker.length > 0) kept.push({ role: "user", content: marker });
+    if (lastTool !== null) {
+      kept.push(lastTool.call);
+      kept.push(lastTool.result);
+    }
+    this.history.splice(0, this.history.length, ...kept);
+  }
+
+  /**
+   * Tier-C hard reset (DESIGN): fresh context of task brief + a
+   * harness-written task state (goal, files touched, tests, open items).
+   * Used on user request or the 3rd eviction.
+   */
+  evictTierC(taskBrief: string, taskState: string): void {
+    this.history.splice(0, this.history.length, { role: "user", content: taskBrief }, { role: "user", content: taskState });
+  }
 }
