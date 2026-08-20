@@ -57,6 +57,8 @@ export interface StepTrace {
   step: number;
   usage?: Usage;
   toolCalls: number;
+  /** Names of the tools the model called this step (debug/telemetry). */
+  tools?: string[];
   evicted: "B" | "C" | null;
 }
 export interface AgentResult {
@@ -122,9 +124,10 @@ export class AgentLoop {
     return this.opts.session ?? DEFAULT_SESSION_CONFIG;
   }
 
-  private trace(step: number, usage: Usage | undefined, toolCalls: number, evicted: "B" | "C" | null): StepTrace {
+  private trace(step: number, usage: Usage | undefined, toolCalls: number, tools: string[] | undefined, evicted: "B" | "C" | null): StepTrace {
     const t: StepTrace = { step, toolCalls, evicted };
     if (usage !== undefined) t.usage = usage;
+    if (tools !== undefined && tools.length > 0) t.tools = tools;
     return t;
   }
 
@@ -146,14 +149,14 @@ export class AgentLoop {
           const out = await this.execute(call);
           this.store.addTool(call.id, out);
         }
-        this.traces.push(this.trace(step, result.usage, result.toolCalls.length, evicted));
+        this.traces.push(this.trace(step, result.usage, result.toolCalls.length, result.toolCalls.map((c) => c.function.name), evicted));
         continue;
       }
 
       // Final answer: content with no tool call. Ingest the assistant message
       // so the answer is part of history (useful for later turns).
       this.store.ingestCompletion({ role: "assistant", content: result.content });
-      this.traces.push(this.trace(step, result.usage, 0, evicted));
+      this.traces.push(this.trace(step, result.usage, 0, undefined, evicted));
       return {
         answer: result.content,
         store: this.store,
@@ -177,7 +180,10 @@ export class AgentLoop {
         const result = await this.opts.chatFn(this.opts.baseUrl, callOpts);
         const degenerate = result.toolCalls.length === 0 && (result.content === null || result.content.trim() === "");
         if (!degenerate) return result;
-        if (attempt === this.opts.retriesPerTurn) return result; // last try: return what we got
+        if (attempt === this.opts.retriesPerTurn) {
+          // A degenerate final attempt must not masquerade as an answer.
+          throw new Error(`agent produced a degenerate turn (no tool call, no content) after ${attempt} attempts`);
+        }
         this.store.addUser(STEER);
       } catch (e) {
         if (attempt === this.opts.retriesPerTurn) throw e;

@@ -127,6 +127,17 @@ test("malformed tool-call JSON becomes tool feedback, not a crash", async () => 
   assert.ok(toolMsg && toolMsg.role === "tool" && toolMsg.content.startsWith("Error:"));
 });
 
+test("persistent degenerate turn (all retries empty) throws, never accepted as answer", async () => {
+  let calls = 0;
+  const fn = async (): Promise<ChatResult> => {
+    calls++;
+    return callResult({ content: null }); // always degenerate
+  };
+  const loop = new AgentLoop({ baseUrl: BASE, task: "t", chatFn: fn, retriesPerTurn: 3 });
+  await assert.rejects(() => loop.run(), /degenerate turn/);
+  assert.equal(calls, 3, "all three retries attempted before throwing");
+});
+
 test("bash commands mentioning test are tracked for Tier-C task state", async () => {
   const seen: ChatOptions[] = [];
   const fn = async (_baseUrl: string, opts: ChatOptions): Promise<ChatResult> => {

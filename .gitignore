@@ -14,6 +14,9 @@ node_modules/
 # Built binary
 tinytiny
 
+# M3 e2e scratch (toy task writes here)
+.tinytiny-e2e/
+
 # Model files (GGUF checkpoints are large; keep out of git)
 models/
 *.gguf
