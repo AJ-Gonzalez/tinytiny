@@ -152,6 +152,32 @@ test("connection error without a restart handler rethrows", async () => {
   await assert.rejects(() => loop.run(), /ECONNREFUSED/);
 });
 
+test("engine-death 500 (vk crash signature) restarts, bad-args 500 steers", async () => {
+  // vk crash -> restart (same turn, no steering)
+  let restarts = 0;
+  const crashFn = async (_b: string, _o: ChatOptions): Promise<ChatResult> => {
+    throw new Error('chat request failed: HTTP 500 {"error":{"code":500,"message":"decode() failed: vk::Queue::submit: ErrorDeviceLost"}}');
+  };
+  const crashLoop = new AgentLoop({ baseUrl: BASE, task: "t", chatFn: crashFn, onConnectionError: async () => { restarts++; } });
+  await assert.rejects(() => crashLoop.run(), /HTTP 500|recover from/);
+  assert.equal(restarts, 3, "vk-crash 500 treated as engine death; capped at 3 restarts");
+});
+
+test("bad-tool-args 500 is steering, not restart", async () => {
+  const seen: ChatOptions[] = [];
+  let restarts = 0;
+  const fn = async (_b: string, opts: ChatOptions): Promise<ChatResult> => {
+    seen.push(opts);
+    if (seen.length === 1) throw new Error('chat request failed: HTTP 500 {"error":{"message":"Failed to parse tool call arguments as JSON"}}');
+    return callResult({ content: "recovered", usage: usage(40, 4) });
+  };
+  const loop = new AgentLoop({ baseUrl: BASE, task: "t", chatFn: fn, onConnectionError: async () => { restarts++; } });
+  const result = await loop.run();
+  assert.equal(result.answer, "recovered");
+  assert.equal(restarts, 0, "bad-args 500 is model feedback, not engine death");
+  assert.ok(seen[1]!.messages.length > seen[0]!.messages.length, "steering message appended");
+});
+
 test("malformed tool-call JSON becomes tool feedback, not a crash", async () => {
   const { fn } = scripted((opts) => {
     if (opts.messages.length === 1) {

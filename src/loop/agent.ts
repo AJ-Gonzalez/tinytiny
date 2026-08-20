@@ -103,7 +103,13 @@ function isConnectionError(e: unknown): boolean {
   if (["ECONNREFUSED", "ECONNRESET", "EPIPE", "ECONNABORTED", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ENOTFOUND"].includes(code)) {
     return true;
   }
-  return typeof err.message === "string" && /socket hang up|connect /i.test(err.message);
+  if (typeof err.message !== "string") return false;
+  // A 500 from a dead engine carries the crash signature in the body —
+  // distinguish it from a 500 caused by the model's bad tool args.
+  if (/socket hang up|connect /i.test(err.message)) return true;
+  // The documented crash (LESSONS: vk::Queue::submit: ErrorDeviceLost /
+  // ggml_abort / decode\(\) failed) — the engine died mid-generation.
+  return /vk::|ErrorDeviceLost|ggml_abort|decode\(\) failed|device lost/i.test(err.message);
 }
 
 export class AgentLoop {
@@ -195,6 +201,7 @@ export class AgentLoop {
 
   /** One turn, with retry-with-steering on 500 or a degenerate (empty) reply. */
   private async stepWithRetry(): Promise<ChatResult> {
+    let connFailures = 0;
     for (let attempt = 1; attempt <= this.opts.retriesPerTurn; attempt++) {
       try {
         const callOpts: ChatOptions = {
@@ -215,8 +222,11 @@ export class AgentLoop {
         if (isConnectionError(e)) {
           // The engine died mid-run (known crash). Restart and retry the SAME
           // turn — no steering, no attempt consumed. A connection failure is
-          // not the model's fault.
+          // not the model's fault. Cap restarts: a handler that keeps
+          // "succeeding" while the error persists must not spin forever.
           if (this.opts.onConnectionError === undefined) throw e;
+          if (connFailures >= 3) throw new Error(`agent failed to recover from ${connFailures} engine crashes this turn: ${(e as Error).message}`);
+          connFailures++;
           await this.opts.onConnectionError();
           attempt--; // this attempt didn't reach the model; don't burn it
           continue;
