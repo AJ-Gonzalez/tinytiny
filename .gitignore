@@ -1,0 +1,15 @@
+# Agent/docs per AGENTS.md privacy policy (all docs except README.md untracked)
+AGENTS.md
+DESIGN.md
+ROADMAP.md
+PENDING.md
+LESSONS.md
+.handoffs/
+
+# Local artifacts
+.env*
+*.log
+
+# Model files (GGUF checkpoints are large; keep out of git)
+models/
+*.gguf
