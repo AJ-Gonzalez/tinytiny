@@ -137,6 +137,17 @@ export class LlamaServer {
   }
 
   /**
+   * Restart-on-death: stop (escalating to SIGKILL) then start again, waiting
+   * for readiness. This engine is crash-prone on this machine (LESSONS:
+   * vk::DeviceLostError even on CPU-only runs), so the harness must recover
+   * rather than assume longevity.
+   */
+  async restart(startTimeoutMs = 120_000): Promise<void> {
+    await this.stop();
+    await this.start(startTimeoutMs);
+  }
+
+  /**
    * Stop the server: SIGTERM, escalate to SIGKILL after `timeoutMs`.
    * Returns the exit code, or null if it was already gone.
    */

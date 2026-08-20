@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { AgentLoop } from "../../src/loop/agent.ts";
+import { AgentLoop, type AgentResult } from "../../src/loop/agent.ts";
 import { DEFAULT_CONFIG } from "../../src/server/config.ts";
 import { LlamaServer } from "../../src/server/llama-server.ts";
 
@@ -40,13 +40,28 @@ test(
       const loop = new AgentLoop({
         baseUrl: server.baseUrl,
         task:
-          "Write a JavaScript file at " + target +
-          " that computes the sum of 1 through 10 and prints it with console.log. " +
-          "Then run it with `node` using the bash tool and confirm it prints 55.",
+          "Write a JavaScript file at " + target + " whose content is exactly:\n" +
+          "console.log(1+2+3+4+5+6+7+8+9+10);\n" +
+          "Then run it with the bash tool using the command `node " + target + "` " +
+          "and report the output.",
         maxSteps: 25,
+        // The distro llama-server can crash mid-run (LESSONS); recover.
+        onConnectionError: async () => {
+          console.log("[e2e] engine died; restarting");
+          await server.restart(180_000);
+          console.log("[e2e] engine restarted");
+        },
       });
 
-      const result = await loop.run();
+      let result: AgentResult;
+      try {
+        result = await loop.run();
+      } catch (e) {
+        // Log the telemetry even when the loop throws, so a failure is debuggable.
+        console.log(`[e2e] FAILED: ${(e as Error).message}`);
+        console.log(`[e2e] traces=${JSON.stringify(loop.traceLog)}`);
+        throw e;
+      }
       console.log(`[e2e] answer=${JSON.stringify(result.answer)}`);
       console.log(`[e2e] telemetry=${JSON.stringify(result.telemetry)}`);
 

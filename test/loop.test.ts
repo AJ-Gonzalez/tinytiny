@@ -112,6 +112,46 @@ test("degenerate empty turn (no content, no tool call) is retried with steering"
   assert.equal(seen.length, 2);
 });
 
+/** A socket-level error the client would throw when the engine is down. */
+function connError(message = "connect ECONNREFUSED 127.0.0.1:18081"): Error {
+  const e = new Error(message);
+  (e as { code?: string }).code = "ECONNREFUSED";
+  return e;
+}
+
+test("connection error triggers onConnectionError and retries the same turn without steering", async () => {
+  const seen: ChatOptions[] = [];
+  let restarts = 0;
+  let calls = 0;
+  const fn = async (_baseUrl: string, opts: ChatOptions): Promise<ChatResult> => {
+    seen.push(opts);
+    calls++;
+    if (calls === 1) throw connError();
+    return callResult({ content: "after restart", usage: usage(30, 3) });
+  };
+  const loop = new AgentLoop({
+    baseUrl: BASE,
+    task: "t",
+    chatFn: fn,
+    onConnectionError: async () => {
+      restarts++;
+    },
+  });
+  const result = await loop.run();
+  assert.equal(result.answer, "after restart");
+  assert.equal(restarts, 1, "restart called once");
+  // No steering message was added — both requests have the same message count.
+  assert.equal(seen[1]!.messages.length, seen[0]!.messages.length, "same turn retried, no steering appended");
+});
+
+test("connection error without a restart handler rethrows", async () => {
+  const fn = async (): Promise<ChatResult> => {
+    throw connError();
+  };
+  const loop = new AgentLoop({ baseUrl: BASE, task: "t", chatFn: fn });
+  await assert.rejects(() => loop.run(), /ECONNREFUSED/);
+});
+
 test("malformed tool-call JSON becomes tool feedback, not a crash", async () => {
   const { fn } = scripted((opts) => {
     if (opts.messages.length === 1) {

@@ -50,6 +50,14 @@ export interface AgentOptions {
   signal?: AbortSignal;
   /** Client to use. Injectable for tests; defaults to the real llama-server client. */
   chatFn?: ChatFn;
+  /**
+   * Called when a request fails to reach the server (connection refused /
+   * reset — the engine died mid-run, a known crash on this machine,
+   * LESSONS). The loop waits for this to resolve, then retries the SAME
+   * turn WITHOUT steering (a dead server is not the model's fault).
+   * Implementations should restart the engine (e.g. LlamaServer.restart).
+   */
+  onConnectionError?: () => Promise<void>;
 }
 
 /** Per-turn accounting, aggregated for the final telemetry. */
@@ -87,6 +95,17 @@ const STEER = [
   "Otherwise answer concisely. No prose, no XML.",
 ].join(" ");
 
+/** Socket-level failure (engine died), NOT an HTTP response (e.g. 500 bad args). */
+function isConnectionError(e: unknown): boolean {
+  if (typeof e !== "object" || e === null) return false;
+  const err = e as { code?: unknown; message?: unknown };
+  const code = typeof err.code === "string" ? err.code : "";
+  if (["ECONNREFUSED", "ECONNRESET", "EPIPE", "ECONNABORTED", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ENOTFOUND"].includes(code)) {
+    return true;
+  }
+  return typeof err.message === "string" && /socket hang up|connect /i.test(err.message);
+}
+
 export class AgentLoop {
   private readonly store = new MessageStore();
   private readonly opts: {
@@ -97,6 +116,7 @@ export class AgentLoop {
     maxTokens: number;
     tools: ToolSchema[];
     chatFn: ChatFn;
+    onConnectionError?: () => Promise<void>;
     session?: SessionConfig;
     signal?: AbortSignal;
   };
@@ -117,11 +137,17 @@ export class AgentLoop {
     };
     if (opts.session !== undefined) this.opts.session = opts.session;
     if (opts.signal !== undefined) this.opts.signal = opts.signal;
+    if (opts.onConnectionError !== undefined) this.opts.onConnectionError = opts.onConnectionError;
     this.taskState = { goal: opts.task, filesTouched: [], tests: [], openItems: [] };
   }
 
   get session(): SessionConfig {
     return this.opts.session ?? DEFAULT_SESSION_CONFIG;
+  }
+
+  /** Current per-step traces (readable after a throw for diagnostics). */
+  get traceLog(): readonly StepTrace[] {
+    return this.traces;
   }
 
   private trace(step: number, usage: Usage | undefined, toolCalls: number, tools: string[] | undefined, evicted: "B" | "C" | null): StepTrace {
@@ -186,6 +212,15 @@ export class AgentLoop {
         }
         this.store.addUser(STEER);
       } catch (e) {
+        if (isConnectionError(e)) {
+          // The engine died mid-run (known crash). Restart and retry the SAME
+          // turn — no steering, no attempt consumed. A connection failure is
+          // not the model's fault.
+          if (this.opts.onConnectionError === undefined) throw e;
+          await this.opts.onConnectionError();
+          attempt--; // this attempt didn't reach the model; don't burn it
+          continue;
+        }
         if (attempt === this.opts.retriesPerTurn) throw e;
         this.store.addUser(STEER);
       }
