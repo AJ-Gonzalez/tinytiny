@@ -6,9 +6,10 @@
  * - Strict-extension history (buildRequest re-sends stored messages
  *   byte-identical → cache warmth), mutation only at eviction.
  * - Retry-with-steering: a failed or degenerate turn (HTTP 500 from bad
- *   tool args, or no content AND no tool call) appends a steering user
- *   message and resends. A failed turn never mutates the store, so the
- *   retry is still a valid extension (M1 gate lesson).
+ *   tool args, or a degenerate reply — empty, cut off at the token cap, or
+ *   repetition spam) appends a steering user message and resends. A failed
+ *   turn never mutates the store, so the retry is still a valid extension
+ *   (M1 gate lesson).
  * - Budget: when prompt_tokens crosses the profile's evict threshold,
  *   Tier-B collapse; on the 3rd eviction, Tier-C hard reset. Eviction
  *   deliberately costs a cold reprocess (DESIGN D5).
@@ -86,14 +87,88 @@ export interface AgentResult {
 
 const DEFAULT_MAX_STEPS = 30;
 const DEFAULT_RETRIES = 3;
-const DEFAULT_MAX_TOKENS = 4096;
+/**
+ * Per-turn max_tokens. Sized as the session reasoning budget (512) plus
+ * completion headroom (~512): healthy turns self-terminate well under it
+ * (LESSONS: the cap is never the binding constraint — the model ends at the
+ * tool boundary or a short answer). It only binds on a degenerate turn,
+ * where it bounds the burn: the old 4096 default let one repetition-spam
+ * turn eat ~55 min of generation before the detector even saw it.
+ */
+const DEFAULT_MAX_TOKENS = 1024;
 
 /** Steering copy for a degenerate turn (see module doc). */
 const STEER = [
   "That reply was not usable.",
   "If a tool call is needed, emit exactly one with valid JSON arguments.",
-  "Otherwise answer concisely. No prose, no XML.",
+  "Otherwise answer concisely. Do not repeat yourself. No prose, no XML.",
 ].join(" ");
+
+/**
+ * Repetition-spam heuristic for the qwen35 degenerate loop (LESSONS:
+ * `?`-spam, `har`/`sharpness`/CJK fragment loops, numbered-fragment loops).
+ * Conservative by design: flags only clearly pathological text; a final
+ * answer that repeats a word a couple of times passes. Content that is
+ * merely long or meandering is not flagged — only structural repetition.
+ */
+export function isRepetitiveContent(content: string): boolean {
+  // 1. Long runs of a single code point ("??????", CJK placeholder spam).
+  if (/(.)\1{7,}/u.test(content)) return true;
+
+  // 2. Three or more consecutive identical non-empty lines, with list
+  //    markers stripped ("1. Parse the file…\n2. Parse the file…" — the
+  //    numbered-fragment loop; a real list's bodies differ).
+  let prev = "";
+  let run = 0;
+  for (const raw of content.split("\n")) {
+    const line = raw.trim().replace(/^\d+[.)]?\s+/, "").replace(/^[•*-]\s+/, "");
+    if (line === "") continue;
+    if (line === prev) {
+      if (++run >= 3) return true;
+    } else {
+      prev = line;
+      run = 1;
+    }
+  }
+
+  // 3. A single whitespace token dominating the text ("har har har…").
+  const tokens = content.split(/\s+/).filter((t) => t !== "");
+  if (tokens.length >= 8) {
+    const counts = new Map<string, number>();
+    for (const t of tokens) counts.set(t, (counts.get(t) ?? 0) + 1);
+    const max = Math.max(...counts.values());
+    if (max >= 8 && max >= tokens.length / 3) return true;
+  }
+
+  // 4. Low 8-gram diversity (fragment loops that vary only a number: the
+  //    "1. Parse the file… 2. Parse the file…" shape). Normal prose keeps
+  //    most 8-grams distinct; spam repeats a short core. Short content just
+  //    misses the gate — its burn is bounded by the token cap anyway.
+  const norm = content.toLowerCase().replace(/\s+/g, " ");
+  if (norm.length >= 64) {
+    const grams = new Set<string>();
+    for (let i = 0; i + 8 <= norm.length; i++) grams.add(norm.slice(i, i + 8));
+    if (grams.size / (norm.length - 7) < 0.5) return true;
+  }
+  return false;
+}
+
+/**
+ * A turn the harness cannot treat as an answer: no tool call AND (empty
+ * content, a generation cut off at the token cap, or repetition spam).
+ * Tool-calling turns are never degenerate — their content is irrelevant,
+ * only the call matters, and a call whose args fail becomes tool feedback.
+ */
+function isDegenerateResult(result: ChatResult): boolean {
+  if (result.toolCalls.length > 0) return false;
+  const content = result.content ?? "";
+  if (content.trim() === "") return true;
+  // finish "length" = the cap cut the generation before a natural stop.
+  // A healthy turn self-terminates well under the cap, so hitting it means
+  // the model was mid-thought/loop — not a finished answer.
+  if (result.finishReason === "length") return true;
+  return isRepetitiveContent(content);
+}
 
 /** Socket-level failure (engine died), NOT an HTTP response (e.g. 500 bad args). */
 function isConnectionError(e: unknown): boolean {
@@ -211,11 +286,10 @@ export class AgentLoop {
         };
         if (this.opts.signal !== undefined) callOpts.signal = this.opts.signal;
         const result = await this.opts.chatFn(this.opts.baseUrl, callOpts);
-        const degenerate = result.toolCalls.length === 0 && (result.content === null || result.content.trim() === "");
-        if (!degenerate) return result;
+        if (!isDegenerateResult(result)) return result;
         if (attempt === this.opts.retriesPerTurn) {
           // A degenerate final attempt must not masquerade as an answer.
-          throw new Error(`agent produced a degenerate turn (no tool call, no content) after ${attempt} attempts`);
+          throw new Error(`agent produced a degenerate turn (no tool call; empty, truncated, or repetitive content) after ${attempt} attempts`);
         }
         this.store.addUser(STEER);
       } catch (e) {

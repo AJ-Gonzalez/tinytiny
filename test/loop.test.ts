@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import type { ChatOptions, ChatResult } from "../src/client.ts";
-import { AgentLoop } from "../src/loop/agent.ts";
+import { AgentLoop, isRepetitiveContent } from "../src/loop/agent.ts";
 import { lastToolExchange, tierCTaskState } from "../src/loop/evict.ts";
 import { DEFAULT_SESSION_CONFIG } from "../src/prompt/session.ts";
 
@@ -202,6 +202,97 @@ test("persistent degenerate turn (all retries empty) throws, never accepted as a
   const loop = new AgentLoop({ baseUrl: BASE, task: "t", chatFn: fn, retriesPerTurn: 3 });
   await assert.rejects(() => loop.run(), /degenerate turn/);
   assert.equal(calls, 3, "all three retries attempted before throwing");
+});
+
+test("repetition detector flags qwen35 spam shapes (LESSONS counterexamples)", () => {
+  const spam = [
+    "??????????", // char run
+    "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "line one\nline one\nline one\n",
+    "har har har har har har har har har har har har",
+    "出现 (, at minimum:\n1. Parse the file as UTF-8 text\n2. Parse the file as UTF-8 text\n3. Parse the file as UTF-8 text",
+    "the quick brown fox jumps the quick brown fox jumps the quick brown fox jumps the quick brown fox jumps the quick brown fox jumps the quick brown fox jumps",
+  ];
+  for (const s of spam) {
+    assert.ok(isRepetitiveContent(s), `should flag: ${JSON.stringify(s.slice(0, 48))}`);
+  }
+});
+
+test("repetition detector passes healthy final answers", () => {
+  const ok = [
+    "1+2+3+4+5+6+7+8+9+10 = 55",
+    "I wrote compute.js and ran it with node. The output was 55, exactly as expected.",
+    "The sum is 55. Done.",
+    "I really really like this result, it is exactly what we wanted.",
+    "x = 1\ny = 2\nx = x + y\nreturn x",
+  ];
+  for (const s of ok) {
+    assert.ok(!isRepetitiveContent(s), `should pass: ${JSON.stringify(s)}`);
+  }
+});
+
+test("repetition-spam turn is steered, never accepted as the answer", async () => {
+  const seen: ChatOptions[] = [];
+  const fn = async (_b: string, opts: ChatOptions): Promise<ChatResult> => {
+    seen.push(opts);
+    if (seen.length === 1) return callResult({ content: "har har har har har har har har har har har har", usage: usage(30, 2) });
+    return callResult({ content: "done", usage: usage(40, 3) });
+  };
+  const loop = new AgentLoop({ baseUrl: BASE, task: "t", chatFn: fn });
+  const result = await loop.run();
+  assert.equal(result.answer, "done");
+  assert.equal(seen.length, 2, "spam turn retried with steering");
+  assert.equal(seen[1]!.messages.length, seen[0]!.messages.length + 1, "steering message appended between attempts");
+});
+
+test("turn cut off at the token cap (finish length, no tool call) is degenerate and steered", async () => {
+  const seen: ChatOptions[] = [];
+  const fn = async (_b: string, opts: ChatOptions): Promise<ChatResult> => {
+    seen.push(opts);
+    if (seen.length === 1) return callResult({ content: "partial rambling", finishReason: "length", usage: usage(30, 2) });
+    return callResult({ content: "concise", usage: usage(40, 3) });
+  };
+  const loop = new AgentLoop({ baseUrl: BASE, task: "t", chatFn: fn });
+  const result = await loop.run();
+  assert.equal(result.answer, "concise");
+  assert.equal(seen.length, 2);
+});
+
+test("spam content WITH a valid tool call still executes (content is irrelevant to a tool turn)", async () => {
+  const seen: ChatOptions[] = [];
+  const fn = async (_b: string, opts: ChatOptions): Promise<ChatResult> => {
+    seen.push(opts);
+    if (seen.length === 1) return callResult({ content: "har har har har har har har har har har har har", toolCalls: [{ id: "call_1", type: "function", function: { name: "bash", arguments: '{"command":"echo hi"}' } }] });
+    return callResult({ content: "done", usage: usage(40, 3) });
+  };
+  const loop = new AgentLoop({ baseUrl: BASE, task: "t", chatFn: fn });
+  const result = await loop.run();
+  assert.equal(result.answer, "done");
+  assert.equal(seen.length, 2, "tool turn executed normally, no steering");
+});
+
+test("persistent repetition-spam throws, never accepted as answer", async () => {
+  let calls = 0;
+  const fn = async (): Promise<ChatResult> => {
+    calls++;
+    return callResult({ content: "har har har har har har har har har har har har" });
+  };
+  const loop = new AgentLoop({ baseUrl: BASE, task: "t", chatFn: fn, retriesPerTurn: 3 });
+  await assert.rejects(() => loop.run(), /degenerate turn/);
+  assert.equal(calls, 3, "all three retries attempted before throwing");
+});
+
+test("default per-step max_tokens bounds the degenerate burn (1024, not 4096)", async () => {
+  const seen: ChatOptions[] = [];
+  const fn = async (_b: string, opts: ChatOptions): Promise<ChatResult> => {
+    seen.push(opts);
+    return callResult({ content: "done", usage: usage(10, 3) });
+  };
+  const loop = new AgentLoop({ baseUrl: BASE, task: "t", chatFn: fn });
+  await loop.run();
+  // Reasoning budget (512) + completion headroom: healthy turns self-terminate
+  // far below this; it only binds on a degenerate turn, bounding the burn.
+  assert.equal(seen[0]!.maxTokens, 1024);
 });
 
 test("bash commands mentioning test are tracked for Tier-C task state", async () => {
