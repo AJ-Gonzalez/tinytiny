@@ -29,6 +29,8 @@ export interface ChatOptions {
   messages: ChatMessage[];
   tools?: ToolSchema[];
   maxTokens?: number;
+  /** Pass `cache_prompt:false` to force a cold slot reprocess (diagnostics). */
+  cachePrompt?: boolean;
   signal?: AbortSignal;
 }
 
@@ -117,6 +119,7 @@ export async function chat(
   };
   if (opts.tools !== undefined) body.tools = opts.tools;
   if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
+  if (opts.cachePrompt !== undefined) body.cache_prompt = opts.cachePrompt;
 
   const res = await request(baseUrl, body, opts.signal);
   const completion = await readJson<ChatCompletion>(res);
@@ -137,6 +140,7 @@ export async function* chatStream(
   };
   if (opts.tools !== undefined) body.tools = opts.tools;
   if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
+  if (opts.cachePrompt !== undefined) body.cache_prompt = opts.cachePrompt;
 
   const res = await request(baseUrl, body, opts.signal);
   const decoder = new TextDecoder();
