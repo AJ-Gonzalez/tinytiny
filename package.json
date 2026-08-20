@@ -1,0 +1,19 @@
+{
+  "name": "tinytiny",
+  "version": "0.1.0",
+  "description": "Local coding agent on a small LLM: llama-server backend, TUI + web view, Node-compatible",
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "build": "bash scripts/build.sh"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}

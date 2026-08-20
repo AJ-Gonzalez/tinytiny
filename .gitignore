@@ -9,6 +9,10 @@ LESSONS.md
 # Local artifacts
 .env*
 *.log
+node_modules/
+
+# Built binary
+tinytiny
 
 # Model files (GGUF checkpoints are large; keep out of git)
 models/
