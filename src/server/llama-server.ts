@@ -139,12 +139,26 @@ export class LlamaServer {
   /**
    * Restart-on-death: stop (escalating to SIGKILL) then start again, waiting
    * for readiness. This engine is crash-prone on this machine (LESSONS:
-   * vk::DeviceLostError even on CPU-only runs), so the harness must recover
-   * rather than assume longevity.
+   * vk::DeviceLostError / ggml_abort even on CPU-only runs), and a crash-prone
+   * engine also fails transiently at SPAWN — so start is retried a few times
+   * with a short backoff before giving up.
    */
-  async restart(startTimeoutMs = 120_000): Promise<void> {
+  async restart(startTimeoutMs = 120_000, spawnRetries = 3): Promise<void> {
     await this.stop();
-    await this.start(startTimeoutMs);
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= spawnRetries; attempt++) {
+      try {
+        await this.start(startTimeoutMs);
+        return;
+      } catch (e) {
+        lastErr = e;
+        // A tiny pause between attempts; the process is already gone.
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    throw lastErr instanceof Error
+      ? new Error(`llama-server failed to restart after ${spawnRetries} attempts: ${lastErr.message}`)
+      : new Error(`llama-server failed to restart after ${spawnRetries} attempts`);
   }
 
   /**
