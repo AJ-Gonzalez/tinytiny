@@ -170,6 +170,16 @@ function isDegenerateResult(result: ChatResult): boolean {
   return isRepetitiveContent(content);
 }
 
+/** Human-readable reason a degenerate turn was rejected (error diagnostics). */
+function degenerateReason(result: ChatResult): string {
+  const content = result.content ?? "";
+  if (content.trim() === "") return "empty content";
+  if (result.finishReason === "length") {
+    return `truncated at the token cap (finish=length; ${JSON.stringify(content.slice(0, 80))}…)`;
+  }
+  return `repetitive content (${JSON.stringify(content.slice(0, 80))}…)`;
+}
+
 /** Socket-level failure (engine died), NOT an HTTP response (e.g. 500 bad args). */
 function isConnectionError(e: unknown): boolean {
   if (typeof e !== "object" || e === null) return false;
@@ -289,7 +299,7 @@ export class AgentLoop {
         if (!isDegenerateResult(result)) return result;
         if (attempt === this.opts.retriesPerTurn) {
           // A degenerate final attempt must not masquerade as an answer.
-          throw new Error(`agent produced a degenerate turn (no tool call; empty, truncated, or repetitive content) after ${attempt} attempts`);
+          throw new Error(`agent produced a degenerate turn (no tool call; ${degenerateReason(result)}) after ${attempt} attempts`);
         }
         this.store.addUser(STEER);
       } catch (e) {
