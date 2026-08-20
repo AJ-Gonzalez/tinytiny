@@ -15,7 +15,7 @@ import path from "node:path";
 import { chat } from "../../src/client.ts";
 import { MessageStore, type ToolSchema } from "../../src/prompt/messages.ts";
 import { buildRequest } from "../../src/prompt/builder.ts";
-import { DEFAULT_SESSION_CONFIG } from "../../src/prompt/session.ts";
+import { DEFAULT_SESSION_CONFIG, taskBrief } from "../../src/prompt/session.ts";
 import { DEFAULT_CONFIG, type LlamaServerConfig } from "../../src/server/config.ts";
 import { LlamaServer } from "../../src/server/llama-server.ts";
 
@@ -57,12 +57,13 @@ test(
       await server.start(180_000);
       console.log(`[integration] server ready at ${server.baseUrl}`);
 
-      // Turn 1: ask for a tool call with a natural instruction. Adversarial
-      // steering ("you MUST call") makes the model over-call tools and
-      // hallucinate an agentic trace (LESSONS.md); natural wording +
-      // --temp 0.3 measured 3/3 single clean calls.
-      store.addUser("Use the read tool on this file and call it now: " + tmp);
-      const turn1 = buildRequest(store, DEFAULT_SESSION_CONFIG.systemPrompt);
+      // Turn 1: contract + task in the FIRST user message (no system role —
+      // a system message breaks tool calling on this arch, LESSONS.md).
+      store.addUser(taskBrief(
+        DEFAULT_SESSION_CONFIG.contract,
+        "Use the read tool on this file and call it now: " + tmp,
+      ));
+      const turn1 = buildRequest(store);
       const r1 = await chat(server.baseUrl, { messages: turn1, tools: [READ_TOOL], maxTokens: 1024 });
       assert.ok(
         r1.toolCalls.length === 1,
@@ -85,7 +86,7 @@ test(
 
       // Turn 2: true extension.
       store.addUser("Now sum those numbers and answer with just the total.");
-      const turn2 = buildRequest(store, DEFAULT_SESSION_CONFIG.systemPrompt);
+      const turn2 = buildRequest(store);
       const r2 = await chat(server.baseUrl, { messages: turn2, tools: [READ_TOOL], maxTokens: 1024 });
 
       const cached = r2.usage?.prompt_tokens_details?.cached_tokens ?? 0;

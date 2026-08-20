@@ -1,7 +1,12 @@
 /**
- * Session configuration: system prompt + context-budget profile.
+ * Session configuration: contract copy + context-budget profile.
  * Budget profiles are carried here and enforced by the eviction logic in M3;
  * they are data now so the default and conservative presets are explicit.
+ *
+ * Contract placement: there is deliberately NO system-role message — a
+ * system message breaks tool calling on this arch (LESSONS.md). The contract
+ * rides at the top of the FIRST user message (the task brief), which is the
+ * stable cached prefix either way.
  */
 
 export interface BudgetProfile {
@@ -27,12 +32,18 @@ export const CONSERVATIVE_PROFILE: BudgetProfile = {
 };
 
 export interface SessionConfig {
-  systemPrompt: string;
+  /** Contract copy. Approved 2026-08-19 (copy may be edited later). */
+  contract: string;
   profile: BudgetProfile;
 }
 
+/** Compose the first user message: contract, then the task. */
+export function taskBrief(contract: string, task: string): string {
+  return `${contract}\n\nTask: ${task}`;
+}
+
 export const DEFAULT_SESSION_CONFIG: SessionConfig = {
-  systemPrompt: [
+  contract: [
     "You are a coding agent working in a git repository.",
     "Rules: read before editing; make minimal changes; run tests after changes; verify before claiming done.",
     "Tool results may be truncated — a `[truncated]` marker means more exists; re-read a narrower range.",

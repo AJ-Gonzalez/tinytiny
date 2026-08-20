@@ -1,13 +1,13 @@
 /**
  * MessageStore + prompt builder unit tests: think-strip, verbatim tool_calls,
- * append-only history, strict-extension builder shape.
+ * append-only history, no-system-role builder, taskBrief composition.
  */
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { MessageStore } from "../src/prompt/messages.ts";
 import { buildRequest } from "../src/prompt/builder.ts";
-import { DEFAULT_SESSION_CONFIG } from "../src/prompt/session.ts";
+import { DEFAULT_SESSION_CONFIG, taskBrief } from "../src/prompt/session.ts";
 
 const TOOL_CALL = {
   id: "call_abc123",
@@ -54,43 +54,45 @@ describe("MessageStore", () => {
   });
 });
 
-describe("buildRequest", () => {
-  test("prepends system and sends the stored history unchanged", () => {
-    const store = new MessageStore();
-    store.addUser("first turn");
-    const req = buildRequest(store, DEFAULT_SESSION_CONFIG.systemPrompt);
-
-    assert.equal(req.length, store.length + 1); // + system
-    assert.equal(req[0]?.role, "system");
-    assert.equal(req[0]?.content, DEFAULT_SESSION_CONFIG.systemPrompt);
-    assert.deepEqual(req[1], { role: "user", content: "first turn" });
+describe("taskBrief", () => {
+  test("composes contract then the task", () => {
+    const brief = taskBrief(DEFAULT_SESSION_CONFIG.contract, "fix the bug");
+    assert.equal(brief, `${DEFAULT_SESSION_CONFIG.contract}\n\nTask: fix the bug`);
   });
+});
 
-  test("reuses stored objects by reference (no re-serialization)", () => {
+describe("buildRequest", () => {
+  test("returns a copy of the stored history, never a system message", () => {
     const store = new MessageStore();
-    store.addUser("first turn");
-    const req = buildRequest(store, DEFAULT_SESSION_CONFIG.systemPrompt);
-    assert.equal(req[1], store.messages[0], "stored object must be re-sent as-is");
+    store.addUser(taskBrief(DEFAULT_SESSION_CONFIG.contract, "first task"));
+    const req = buildRequest(store);
+
+    assert.notEqual(req, store.messages, "must be a copy, not the internal array");
+    assert.deepEqual(req, [...store.messages]);
+    assert.equal(req.length, 1);
+    assert.equal(req[0]?.role, "user");
+    assert.equal(req[0]?.content, taskBrief(DEFAULT_SESSION_CONFIG.contract, "first task"));
+    assert.ok(!req.some((m) => m.role === "system"), "no system-role message by design");
   });
 
   test("store is unchanged by building (append-only)", () => {
     const store = new MessageStore();
     store.addUser("a");
     const before = store.length;
-    buildRequest(store, DEFAULT_SESSION_CONFIG.systemPrompt);
+    buildRequest(store);
     assert.equal(store.length, before);
   });
 
   test("every build is a strict extension of the previous", () => {
     const store = new MessageStore();
     store.addUser("turn one");
-    const req1 = buildRequest(store, DEFAULT_SESSION_CONFIG.systemPrompt);
+    const req1 = buildRequest(store);
     store.addUser("turn two");
-    const req2 = buildRequest(store, DEFAULT_SESSION_CONFIG.systemPrompt);
+    const req2 = buildRequest(store);
 
-    assert.equal(req1.length, 2);
-    assert.equal(req2.length, 3);
-    // Turn 2's first 2 messages serialize byte-identical to turn 1's full set.
+    assert.equal(req1.length, 1);
+    assert.equal(req2.length, 2);
+    // Turn 2's first message serializes byte-identical to turn 1's full set.
     assert.equal(JSON.stringify(req2.slice(0, req1.length)), JSON.stringify(req1));
   });
 });

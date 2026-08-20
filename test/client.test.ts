@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { chat, chatStream, accumulate } from "../src/client.ts";
 import { MessageStore, type ToolSchema } from "../src/prompt/messages.ts";
 import { buildRequest } from "../src/prompt/builder.ts";
-import { DEFAULT_SESSION_CONFIG } from "../src/prompt/session.ts";
+import { DEFAULT_SESSION_CONFIG, taskBrief } from "../src/prompt/session.ts";
 import { startMockCompletions } from "./helpers/mock-server.ts";
 
 const TOOL_SCHEMA: ToolSchema = {
@@ -29,7 +29,7 @@ const TOOL_SCHEMA: ToolSchema = {
   },
 };
 
-const SYSTEM = DEFAULT_SESSION_CONFIG.systemPrompt;
+const CONTRACT = DEFAULT_SESSION_CONFIG.contract;
 
 describe("chat (non-streaming)", () => {
   test("parses tool_calls, reasoning, usage, finish_reason; sends tools and stream:false", async () => {
@@ -215,9 +215,9 @@ describe("wire-level strict extension", () => {
     const store = new MessageStore();
 
     try {
-      // Turn 1: user asks, model emits a tool call.
-      store.addUser("Read /tmp/foo.txt using the tool.");
-      const turn1 = buildRequest(store, SYSTEM);
+      // Turn 1: first user message = contract + task (no system role).
+      store.addUser(taskBrief(CONTRACT, "Read /tmp/foo.txt using the tool."));
+      const turn1 = buildRequest(store);
       const r1 = await chat(mock.url, { messages: turn1, tools: [TOOL_SCHEMA] });
       store.ingestCompletion({
         role: "assistant",
@@ -228,7 +228,7 @@ describe("wire-level strict extension", () => {
 
       // Turn 2: strict extension.
       store.addUser("Now what is the sum?");
-      const turn2 = buildRequest(store, SYSTEM);
+      const turn2 = buildRequest(store);
       const r2 = await chat(mock.url, { messages: turn2, tools: [TOOL_SCHEMA] });
       assert.equal(r2.content, "15");
       assert.equal(r2.usage?.prompt_tokens_details?.cached_tokens, 100);
