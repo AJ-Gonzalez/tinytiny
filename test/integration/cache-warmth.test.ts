@@ -45,6 +45,10 @@ test(
     const tmp = path.join(os.tmpdir(), `tinytiny-cachewarm-${process.pid}.txt`);
     fs.writeFileSync(tmp, "1\n2\n3\n4\n5\n");
 
+    // Default config now carries --temp 0.3 (measured: tool calls 3/3 with
+    // short reasoning, vs 1/3 and degenerate thinking at default 0.8 —
+    // LESSONS.md). maxTokens 1024 is a generous guard, never the binding
+    // constraint: the model self-terminates at the tool call.
     const cfg: LlamaServerConfig = { ...DEFAULT_CONFIG };
     const server = new LlamaServer(cfg);
     const store = new MessageStore();
@@ -53,13 +57,13 @@ test(
       await server.start(180_000);
       console.log(`[integration] server ready at ${server.baseUrl}`);
 
-      // Turn 1: ask for a tool call. Steering rides on the user instruction
-      // (system prompt is contract-only by design).
-      store.addUser(
-        "You must call the read tool on this exact path and call it now — do not answer in plain text: " + tmp,
-      );
+      // Turn 1: ask for a tool call with a natural instruction. Adversarial
+      // steering ("you MUST call") makes the model over-call tools and
+      // hallucinate an agentic trace (LESSONS.md); natural wording +
+      // --temp 0.3 measured 3/3 single clean calls.
+      store.addUser("Use the read tool on this file and call it now: " + tmp);
       const turn1 = buildRequest(store, DEFAULT_SESSION_CONFIG.systemPrompt);
-      const r1 = await chat(server.baseUrl, { messages: turn1, tools: [READ_TOOL] });
+      const r1 = await chat(server.baseUrl, { messages: turn1, tools: [READ_TOOL], maxTokens: 1024 });
       assert.ok(
         r1.toolCalls.length === 1,
         `expected one tool call, got ${r1.toolCalls.length}; ` +
@@ -82,7 +86,7 @@ test(
       // Turn 2: true extension.
       store.addUser("Now sum those numbers and answer with just the total.");
       const turn2 = buildRequest(store, DEFAULT_SESSION_CONFIG.systemPrompt);
-      const r2 = await chat(server.baseUrl, { messages: turn2, tools: [READ_TOOL] });
+      const r2 = await chat(server.baseUrl, { messages: turn2, tools: [READ_TOOL], maxTokens: 1024 });
 
       const cached = r2.usage?.prompt_tokens_details?.cached_tokens ?? 0;
       console.log(`[integration] turn 2: prompt_tokens=${r2.usage?.prompt_tokens} cached=${cached} answer=${JSON.stringify(r2.content)}`);

@@ -45,10 +45,27 @@ describe("buildArgs", () => {
       "--cache-type-k", "q8_0",
       "--cache-type-v", "q8_0",
       "--parallel", "1",
+      "--temp", "0.3",
       "--reasoning-budget", "512",
       "--reasoning-format", "deepseek",
       "--host", "127.0.0.1",
       "--port", "18123",
+      "--jinja",
+    ]);
+  });
+
+  test("reasoning off drops budget/format flags", () => {
+    assert.deepEqual(buildArgs(cfg({ reasoning: "off" })), [
+      "-m", DEFAULT_CONFIG.modelPath,
+      "-t", "8",
+      "--ctx-size", "32768",
+      "--cache-type-k", "q8_0",
+      "--cache-type-v", "q8_0",
+      "--parallel", "1",
+      "--temp", "0.3",
+      "--reasoning", "off",
+      "--host", "127.0.0.1",
+      "--port", String(DEFAULT_CONFIG.port),
       "--jinja",
     ]);
   });
